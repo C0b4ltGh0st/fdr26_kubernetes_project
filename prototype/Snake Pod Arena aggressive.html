@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Snake Pod Arena</title>
+<style>
+  :root {
+    --bg:#101820; --fg:#eef4f7; --muted:#b7c6ce; --panel:#15242c; --line:#52636d; --btn:#1d7a68; --btn2:#40515d; --input:#172630;
+    color-scheme: dark; font-family: system-ui, sans-serif; box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg:#eef3f5; --fg:#14232b; --muted:#4b5f69; --panel:#fff; --line:#b5c3ca; --input:#fff; color-scheme: light; }
+  }
+  :root[data-theme="dark"] { --bg:#101820; --fg:#eef4f7; --muted:#b7c6ce; --panel:#15242c; --line:#52636d; --input:#172630; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body { margin:0; padding:20px; background:var(--bg); color:var(--fg); }
+  main { max-width:1280px; margin:auto; }
+  h1 { margin:0 0 6px; font-size:1.6rem; }
+  p { color:var(--muted); margin:0 0 8px; }
+  .controls { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin:14px 0; }
+  label { display:grid; gap:5px; font-size:.9rem; color:var(--muted); }
+  input, button { font:inherit; border-radius:8px; padding:9px 12px; border:1px solid var(--line); }
+  input { width:100px; background:var(--input); color:var(--fg); }
+  button { cursor:pointer; background:var(--btn); color:#fff; border:0; }
+  button.secondary { background:var(--btn2); }
+  .stats { display:flex; flex-wrap:wrap; gap:18px; margin:10px 0; color:var(--muted); }
+  .layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+  @media (max-width:900px) { .layout { grid-template-columns:1fr; } }
+  canvas { display:block; width:100%; height:auto; background:#15242c; border:1px solid var(--line); border-radius:8px; }
+  aside { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; max-height:660px; overflow-y:auto; }
+  aside h2 { font-size:.95rem; margin:2px 4px 8px; }
+  .pod { display:grid; grid-template-columns:12px 1fr auto; gap:2px 8px; align-items:center; padding:6px 4px; border-bottom:1px solid var(--line); font-size:.78rem; }
+  .pod:last-child { border:0; }
+  .sw { width:12px; height:12px; border-radius:50%; grid-row:span 2; }
+  .nm { font-family:ui-monospace,Menlo,monospace; word-break:break-all; }
+  .meta { color:var(--muted); grid-column:2/4; display:flex; flex-wrap:wrap; gap:4px 12px; }
+  .len { font-weight:700; font-size:.95rem; }
+  .st { color:#53d769; font-weight:600; } .st.bad { color:#ff5d5d; } .st.warn { color:#ffa64d; } .st.wait { color:#ffcc4d; }
+  .hint { font-size:.85rem; margin-top:10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🐍 Snake Pod Arena</h1>
+  <p>Each snake is a Kubernetes pod hunting soldiers (+1) and tanks (+3). Bots avoid walls and occupied cells.</p>
+  <div class="controls">
+    <label>Number of snakes (1–20)
+      <input id="snakeCount" type="number" min="1" max="20" value="8">
+    </label>
+    <label>Max food items (1–50)
+      <input id="maxFood" type="number" min="1" max="50" value="6">
+    </label>
+    <label>Crash after N deaths (1–20)
+      <input id="maxDeaths" type="number" min="1" max="20" value="5">
+    </label>
+    <button id="startBtn">Start / restart</button>
+    <button id="pauseBtn" class="secondary" type="button">Pause</button>
+  </div>
+  <div class="stats" aria-live="polite">
+    <span id="alive">Alive: 0</span>
+    <span id="food">Eaten: 0</span>
+    <span id="longest">Longest: 0</span>
+    <span id="deaths">Deaths: 0</span>
+  </div>
+  <div class="layout">
+    <canvas id="arena" width="960" height="648" aria-label="Snake game arena"></canvas>
+    <aside><h2>Pods (sorted by items eaten)</h2><div id="pods"></div></aside>
+  </div>
+  <p class="hint">A snake that hits itself or a wall restarts at length 1. If a snake runs into another, the shorter one restarts; ties restart both.</p>
+</main>
+
+<script>
+(() => {
+  const canvas = document.getElementById("arena"), ctx = canvas.getContext("2d");
+  const countInput = document.getElementById("snakeCount");
+  const COLS = 40, ROWS = 27, C = 24;
+  const colors = ["#53d769","#55b9f3","#ffcc4d","#d58bff","#ff806e","#48d6c5","#f28fce","#b4d36b","#a6a6ff","#ffa64d"];
+  const apps = ["api-gateway","auth-service","payments","checkout","redis-cache","postgres","ingress-nginx","metrics-agent","worker-queue","frontend","search-indexer","notifier"];
+  const AL = "bcdfghjklmnpqrstvwxz2456789";
+  const rnd = n => Array.from({length:n}, () => AL[Math.floor(Math.random()*AL.length)]).join("");
+  const podName = () => `${apps[Math.floor(Math.random()*apps.length)]}-${rnd(9)}-${rnd(5)}`;
+
+  let snakes = [], foods = [], timer = null, paused = false, eaten = 0, deaths = 0, frame = 0, maxFood = 6, maxDeaths = 5;
+  const key = p => `${p.x},${p.y}`;
+  const same = (a,b) => a.x===b.x && a.y===b.y;
+  const inside = p => p.x>=0 && p.x<COLS && p.y>=0 && p.y<ROWS;
+  const dist = (a,b) => Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
+
+  function othersCells(snake) {
+    const s = new Set();
+    for (const o of snakes) if (o!==snake && o.alive) for (const p of o.body) s.add(key(p));
+    return s;
+  }
+  function nearestFood(h) {
+    let best = null;
+    for (const f of foods) if (!best || dist(h,f) < dist(h,best)) best = f;
+    return best;
+  }
+  function chooseMove(snake) {
+    const h = snake.body[0], target = nearestFood(h) || {x:20,y:13};
+    const opts = [{x:h.x+1,y:h.y},{x:h.x-1,y:h.y},{x:h.x,y:h.y+1},{x:h.x,y:h.y-1}];
+    const oc = othersCells(snake), own = new Set(snake.body.slice(0,-1).map(key));
+    const safe = opts.filter(p => inside(p) && !oc.has(key(p)) && !own.has(key(p)));
+    if (!safe.length) return null;
+    safe.sort((a,b) => dist(a,target)-dist(b,target));
+    const bd = dist(safe[0],target), best = safe.filter(p => dist(p,target)===bd);
+    return best[Math.floor(Math.random()*best.length)];
+  }
+  const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
+  // Smarter bot: BFS path to food, flood-fill space check (no self-trapping),
+  // body-aware timing (own tail vacates), avoids heads of longer snakes, avoids contested food.
+  function chooseMoveSmart(snake) {
+    const N = COLS*ROWS, idx = p => p.y*COLS + p.x;
+    const h = snake.body[0], len = snake.body.length, tail = snake.body[len-1];
+    const freeAt = new Int16Array(N);
+    const rivals = snakes.filter(o => o !== snake && o.alive);
+    for (const o of rivals) for (const p of o.body) freeAt[idx(p)] = 9999;
+    snake.body.forEach((p,i) => { freeAt[idx(p)] = len - i + snake.pending; });
+    const danger = new Set();
+    for (const o of rivals) if (o.body.length >= len) {
+      const oh = o.body[0];
+      for (const [dx,dy] of DIRS) danger.add(key({x:oh.x+dx, y:oh.y+dy}));
+    }
+    const info = foods.map(f => ({i: idx(f), val: f.val, contested: rivals.some(o => dist(o.body[0], f) < dist(h, f))}));
+    // Hunting: a slightly smaller, still valuable snake in sight is prey (its body kills it when we hit it)
+    const preyCells = new Map(), targets = [];
+    for (const o of rivals) {
+      const ol = o.body.length;
+      if (ol >= 3 && ol < len && len - ol <= Math.max(3, len*0.4) && dist(h, o.body[0]) <= 14) {
+        for (const p of o.body) preyCells.set(idx(p), ol);
+        const oh = o.body[0], nx = {x: oh.x + o.dir.x, y: oh.y + o.dir.y};   // predicted next head cell (intercept)
+        if (inside(nx) && freeAt[idx(nx)] === 0) targets.push({i: idx(nx), w: ol});
+      }
+    }
+    let best = null, bestScore = -Infinity;
+    for (const [dx,dy] of DIRS) {
+      const c = {x: h.x+dx, y: h.y+dy};
+      if (!inside(c)) continue;
+      const ci = idx(c);
+      if (preyCells.has(ci)) { const sc = 500 + preyCells.get(ci); if (sc > bestScore) { bestScore = sc; best = c; } continue; }
+      if (freeAt[ci] > 1) continue;
+      const t = new Int16Array(N); t[ci] = 1; const preyT = new Map();
+      const q = [ci];
+      for (let qi = 0; qi < q.length; qi++) {
+        const i = q[qi], x = i % COLS, y = (i / COLS) | 0, nt = t[i] + 1;
+        for (const [ax,ay] of DIRS) {
+          const nx = x+ax, ny = y+ay;
+          if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
+          const ni = ny*COLS + nx;
+          if (!t[ni] && freeAt[ni] <= nt) { t[ni] = nt; q.push(ni); } else if (preyCells.has(ni) && !preyT.has(ni)) preyT.set(ni, nt);
+        }
+      }
+      const area = q.length;
+      let score = Math.random() * 0.5;
+      if (area < len) score -= 1000 - area;
+      else if (area < len*1.5) score -= (len*1.5 - area) * 3;
+      if (danger.has(key(c))) score -= 60;
+      let cost = Infinity;
+      for (const f of info) if (t[f.i]) cost = Math.min(cost, t[f.i] + (f.contested ? 8 : 0) - (f.val-1)*1.5);
+      for (const [pi, pt] of preyT) cost = Math.min(cost, pt - preyCells.get(pi)*0.6 - 4);
+      for (const g of targets) if (t[g.i]) cost = Math.min(cost, t[g.i] + 1 - g.w*0.6 - 4);
+      if (cost < Infinity) score -= cost*3; else score -= 40 + dist(c, tail)*0.5;
+      score += Math.min(area, 60) * 0.2;
+      if (c.x === 0 || c.y === 0 || c.x === COLS-1 || c.y === ROWS-1) score -= 1;
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    return best;
+  }
+  function freeCell() {
+    const used = new Set(foods.map(key));
+    for (const s of snakes) if (s.alive) for (const p of s.body) used.add(key(p));
+    const free = [];
+    for (let y=0;y<ROWS;y++) for (let x=0;x<COLS;x++) if (!used.has(`${x},${y}`)) free.push({x,y});
+    return free.length ? free[Math.floor(Math.random()*free.length)] : null;
+  }
+  function refillFood() {
+    const want = maxFood;
+    while (foods.length < want) {
+      const p = freeCell(); if (!p) break;
+      const tank = Math.random() < 0.3;
+      foods.push({x:p.x, y:p.y, type: tank ? "tank" : "soldier", val: tank ? 3 : 1});
+    }
+  }
+  function respawn(s) {
+    deaths++; s.deaths++; s.pending = 0;
+    if (s.deaths >= maxDeaths) { s.alive = false; s.crashed = true; s.body = []; return; }
+    const p = freeCell();
+    if (!p) { s.alive = false; return; }
+    s.body = [p]; s.alive = true; s.dir = {x:1,y:0}; s.restartUntil = frame + 10;
+  }
+  function start() {
+    clearInterval(timer);
+    let n = parseInt(countInput.value,10); if (!Number.isFinite(n)) n = 8;
+    n = Math.max(1, Math.min(20, n)); countInput.value = n;
+    const clampInt = (id, lo, hi, def) => { const el = document.getElementById(id); let v = parseInt(el.value,10); if (!Number.isFinite(v)) v = def; v = Math.max(lo, Math.min(hi, v)); el.value = v; return v; };
+    maxFood = clampInt("maxFood", 1, 50, 6); maxDeaths = clampInt("maxDeaths", 1, 20, 5); frame = 0;
+    snakes = []; foods = []; eaten = 0; deaths = 0;
+    for (let i=0;i<n;i++) {
+      const p = {x: 2 + (i*7)%(COLS-4), y: 2 + Math.floor(i/5)*5};
+      snakes.push({name:podName(), body:[p], color:colors[i%colors.length], alive:true, crashed:false, restartUntil:0, deaths:0, eaten:0, pending:0, dir:{x:1,y:0}});
+    }
+    refillFood(); paused = false;
+    document.getElementById("pauseBtn").textContent = "Pause";
+    timer = setInterval(tick, 140); draw();
+  }
+  function tick() {
+    frame++;
+    for (const s of snakes) {
+      if (!s.alive) continue;
+      const next = chooseMoveSmart(s);
+      if (!next) { respawn(s); continue; }
+      if (s.body.slice(0,-1).some(p => same(p,next))) { respawn(s); continue; }
+      const hit = snakes.find(o => o!==s && o.alive && o.body.some(p => same(p,next)));
+      if (hit) {
+        if (s.body.length < hit.body.length) { respawn(s); continue; }
+        else if (s.body.length > hit.body.length) respawn(hit);
+        else { respawn(hit); respawn(s); continue; }
+      }
+      s.dir = {x: next.x - s.body[0].x, y: next.y - s.body[0].y};
+      s.body.unshift(next);
+      const fi = foods.findIndex(f => same(f,next));
+      if (fi >= 0) { s.pending += foods[fi].val; foods.splice(fi,1); eaten++; s.eaten++; }
+      if (s.pending > 0) s.pending--; else s.body.pop();
+    }
+    refillFood(); draw();
+  }
+
+  // ---- drawing ----
+  function drawSoldier(f) {
+    const x = f.x*C + C/2, y = f.y*C + C/2;
+    ctx.save(); ctx.translate(x,y);
+    ctx.strokeStyle = "#3b2f22"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(3,-2); ctx.lineTo(10,-9); ctx.stroke();      // rifle
+    ctx.fillStyle = "#5a7a3a"; ctx.fillRect(-5,-3,10,11);                    // body
+    ctx.fillStyle = "#4a3a2a"; ctx.fillRect(-5,8,4,3); ctx.fillRect(1,8,4,3);// boots
+    ctx.fillStyle = "#e0b48c"; ctx.beginPath(); ctx.arc(0,-6,3.6,0,7); ctx.fill(); // face
+    ctx.fillStyle = "#3f5a2a"; ctx.beginPath(); ctx.arc(0,-7.5,4.6,Math.PI,0); ctx.fill(); // helmet
+    ctx.fillRect(-5.5,-7.5,11,1.6);
+    ctx.restore();
+  }
+  function drawTank(f) {
+    const x = f.x*C + C/2, y = f.y*C + C/2;
+    ctx.save(); ctx.translate(x,y);
+    ctx.fillStyle = "#2c2f26"; ctx.fillRect(-11,2,22,7);                     // tracks
+    ctx.fillStyle = "#555c47"; for (let i=-8;i<=8;i+=5.5) { ctx.beginPath(); ctx.arc(i,5.5,2,0,7); ctx.fill(); }
+    ctx.fillStyle = "#6b7a4f"; ctx.fillRect(-10,-3,20,6);                    // hull
+    ctx.fillStyle = "#5a6842"; ctx.fillRect(-5,-8,10,6);                     // turret
+    ctx.fillStyle = "#3d4530"; ctx.fillRect(4,-6.5,10,2.4);                  // barrel
+    ctx.restore();
+  }
+  function drawSnake(s) {
+    const n = s.body.length, pts = s.body.map(p => ({x:p.x*C+C/2, y:p.y*C+C/2}));
+    const w = i => C*(0.28 + 0.52*(1 - i/Math.max(n,6)));
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    for (const pass of [0,1,2]) {
+      for (let i=n-1;i>=1;i--) {
+        ctx.beginPath(); ctx.moveTo(pts[i].x,pts[i].y); ctx.lineTo(pts[i-1].x,pts[i-1].y);
+        if (pass===0) { ctx.strokeStyle="rgba(0,0,0,.55)"; ctx.lineWidth = w(i)+3; }
+        else if (pass===1) { ctx.strokeStyle = s.color; ctx.lineWidth = w(i); }
+        else { ctx.strokeStyle = "rgba(255,255,255,.28)"; ctx.lineWidth = w(i)*0.35; }
+        ctx.stroke();
+      }
+    }
+    for (let i=1;i<n;i++) {                                  // scale pattern
+      ctx.fillStyle = i%2 ? "rgba(0,0,0,.28)" : "rgba(0,0,0,.14)";
+      ctx.beginPath(); ctx.arc(pts[i].x,pts[i].y,w(i)*0.28,0,7); ctx.fill();
+    }
+    const h = pts[0], d = s.dir, ang = Math.atan2(d.y,d.x);
+    if (frame % 6 < 3) {                                     // forked tongue
+      ctx.strokeStyle = "#e0314b"; ctx.lineWidth = 1.5;
+      const tx = h.x + d.x*C*0.95, ty = h.y + d.y*C*0.95;
+      ctx.beginPath(); ctx.moveTo(h.x+d.x*C*0.4,h.y+d.y*C*0.4); ctx.lineTo(tx,ty);
+      ctx.lineTo(tx+d.x*4-d.y*3, ty+d.y*4+d.x*3); ctx.moveTo(tx,ty); ctx.lineTo(tx+d.x*4+d.y*3, ty+d.y*4-d.x*3); ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.beginPath(); ctx.ellipse(h.x,h.y,C*0.56,C*0.46,ang,0,7); ctx.fill();
+    ctx.fillStyle = s.color; ctx.beginPath(); ctx.ellipse(h.x,h.y,C*0.52,C*0.42,ang,0,7); ctx.fill();
+    for (const sg of [-1,1]) {                               // eyes
+      const ex = h.x + d.x*C*0.18 - d.y*sg*C*0.22, ey = h.y + d.y*C*0.18 + d.x*sg*C*0.22;
+      ctx.fillStyle = "#fffbe0"; ctx.beginPath(); ctx.arc(ex,ey,3.2,0,7); ctx.fill();
+      ctx.fillStyle = "#111"; ctx.beginPath(); ctx.ellipse(ex+d.x*.8,ey+d.y*.8,1,2.4,ang+Math.PI/2,0,7); ctx.fill();
+    }
+  }
+  function podState(s) {
+    let t, c = "";
+    if (s.crashed) { t = "Error"; c = "bad"; }
+    else if (!s.alive) { t = "Evicted"; c = "bad"; }
+    
+    else if (frame < s.restartUntil) { t = "ContainerCreating"; c = "wait"; }
+    else t = "Running";
+    return `<span class="st ${c}">${t}</span>`;
+  }
+  function draw() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = "#17281f"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle = "rgba(255,255,255,.04)"; ctx.lineWidth = 1;
+    for (let x=0;x<=COLS;x++) { ctx.beginPath(); ctx.moveTo(x*C,0); ctx.lineTo(x*C,ROWS*C); ctx.stroke(); }
+    for (let y=0;y<=ROWS;y++) { ctx.beginPath(); ctx.moveTo(0,y*C); ctx.lineTo(COLS*C,y*C); ctx.stroke(); }
+    for (const f of foods) f.type==="tank" ? drawTank(f) : drawSoldier(f);
+    for (const s of snakes) if (s.alive) drawSnake(s);
+    const living = snakes.filter(s => s.alive);
+    document.getElementById("alive").textContent = `Alive: ${living.length}/${snakes.length}`;
+    document.getElementById("food").textContent = `Eaten: ${eaten}`;
+    document.getElementById("longest").textContent = `Longest: ${Math.max(0,...snakes.map(s=>s.body.length))}`;
+    document.getElementById("deaths").textContent = `Deaths: ${deaths}`;
+    const sorted = [...snakes].sort((a,b) => b.eaten - a.eaten || b.body.length - a.body.length);
+    document.getElementById("pods").innerHTML = sorted.map(s => `
+      <div class="pod"><span class="sw" style="background:${s.color}"></span>
+        <span class="nm">${s.name}</span><span class="len" title="Items eaten">${s.eaten}</span>
+        <span class="meta"><span>Length: ${s.body.length}</span><span>Deaths: ${s.deaths}/${maxDeaths}</span>${podState(s)}</span>
+      </div>`).join("");
+  }
+
+  document.getElementById("startBtn").addEventListener("click", start);
+  document.getElementById("pauseBtn").addEventListener("click", () => {
+    if (!timer && !paused) return;
+    paused = !paused;
+    if (paused) { clearInterval(timer); timer = null; } else timer = setInterval(tick, 140);
+    document.getElementById("pauseBtn").textContent = paused ? "Resume" : "Pause";
+  });
+  start();
+})();
+</script>
+</body>
+</html>
