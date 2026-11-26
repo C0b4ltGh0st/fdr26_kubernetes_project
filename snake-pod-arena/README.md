@@ -14,16 +14,35 @@ The browser shows each snake as a color-coded column of tanks on a 25 × 15 boar
 * After deploy the game is **stopped** and **no snake pod exists**. Press **Start** in the browser to create them.
 * **Stop** deletes all snake pods. **Restart** = Stop + Start (new pods, scores reset).
 
-## Quick start (kind / minikube / Docker Desktop)
+## Deploy to course-45
+
+Set `KUBECONFIG` to the path of your `course-45.config` file, publish the Docker image,
+and apply the Kubernetes manifests:
 
 ```bash
-make up      # deploy the published afkproficoder/snake-pod-arena:latest image
-make open    # port-forward → http://localhost:8080  (or use the Ingress, see below)
-make pods    # in another terminal: watch the snake pods appear when you press Start
+export KUBECONFIG="<path to file course-45.config>"
+
+chmod +x ./scripts/publish-image.sh
+./scripts/publish-image.sh
+
+kubectl apply -k .
 ```
 
-Change settings: edit `.env`, then `make deploy`. The deployment pulls the published image from Docker Hub.\n\nTo build and publish a new image yourself, run `make build` followed by `make push` (after logging in to Docker Hub). The ConfigMap name carries a content hash, so the
-arena pod is replaced automatically and comes back **stopped** (press Start again).
+The publish script prompts for your Docker Hub username, logs in to Docker Hub, builds, tags,
+and pushes the image. It also updates `kustomization.yaml` to use the published image.
+
+The script runs `docker login` (Docker prompts for your password/token securely), builds
+`<your-dockerhub-username>/snake-pod-arena:<tag>`, pushes it, and updates the image name/tag in
+`kustomization.yaml` so future `kubectl apply -k .` deployments use your image. Make sure the
+repository exists in your Docker Hub account and is public, or configure registry credentials
+for your Kubernetes cluster. The ConfigMap name carries a content hash, so the arena pod is
+replaced automatically and comes back **stopped** (press Start again).
+
+You can check the deployment status with:
+
+```bash
+kubectl -n snake-arena rollout status deployment/snake-arena
+```
 
 No cluster handy? `make dev` runs everything locally with a fake Kubernetes API; each "pod" is a local
 process. Same UI, same game, same protocol.
@@ -86,6 +105,5 @@ src/arena.js         ← web server + referee + pod controller
 src/game.js          ← rules (pure logic)      src/ai.js + snake.js ← the snake pod
 src/kube.js          ← tiny Kubernetes client  src/public/index.html ← UI
 dev/mock-kube.js     ← `make dev` harness
-Dockerfile, Makefile
+Dockerfile, Makefile, scripts/publish-image.sh
 ```
-\n## Container image\n\nThe arena and all snake pods use `afkproficoder/snake-pod-arena:latest`. Kubernetes is configured with `imagePullPolicy: Always`, so each newly created pod checks the registry for the current `latest` image. The snake pods inherit the image and pull policy from the running arena pod.\n
