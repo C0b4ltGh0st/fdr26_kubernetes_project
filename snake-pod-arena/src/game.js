@@ -2,9 +2,12 @@
 // Authoritative game rules. No I/O in here: the arena feeds it moves that
 // the snake pods submitted and publishes the result.
 
-const COLS = 40;
-const ROWS = 27;
-const COLORS = ['#53d769', '#55b9f3', '#ffcc4d', '#d58bff', '#ff806e', '#48d6c5', '#f28fce', '#b4d36b', '#a6a6ff', '#ffa64d'];
+const COLS = 25;
+const ROWS = 15;
+const COLORS = [
+  '#53d769', '#55b9f3', '#ffcc4d', '#d58bff', '#ff806e', '#48d6c5', '#f28fce', '#b4d36b', '#a6a6ff', '#ffa64d',
+  '#4878ef', '#ed525f', '#a666ed', '#e9caa3', '#8ee943', '#f0ebdd', '#ef762b', '#e968bb', '#1eaf92', '#8baebf',
+];
 
 const key = (p) => `${p.x},${p.y}`;
 const same = (a, b) => a.x === b.x && a.y === b.y;
@@ -23,6 +26,7 @@ class Game {
     this.foods = [];
     this.eaten = 0;
     this.deaths = 0;
+    this.collisionEffects = { impacts: [], defeated: [] };
   }
 
   // A pod was requested. The snake only appears on the board once the pod joins.
@@ -66,7 +70,11 @@ class Game {
   }
 
   place(s, initial) {
-    let p = initial ? { x: 2 + (s.slot * 7) % (COLS - 4), y: 2 + Math.floor(s.slot / 5) * 5 } : null;
+    const slotsPerRow = 5;
+    let p = initial ? {
+      x: Math.floor(((s.slot % slotsPerRow) + 0.5) * COLS / slotsPerRow),
+      y: 2 + Math.floor(s.slot / slotsPerRow) * 3,
+    } : null;
     if (!p || this.isUsed(p)) p = this.freeCell();
     if (!p) { s.alive = false; s.body = []; return false; }
     s.body = [p]; s.alive = true; s.dir = { x: 1, y: 0 }; s.pending = 0; s.move = null;
@@ -118,11 +126,13 @@ class Game {
       heads.get(k).push(s);
     }
 
-    const dead = new Set();
-    const clash = (a, b) => {              // the shorter snake restarts, a tie restarts both
+    const dead = new Set(), defeated = new Set(), impacts = new Map();
+    const defeat = (s) => { dead.add(s); defeated.add(s); };
+    const clash = (a, b, point) => {       // the shorter snake restarts, a tie restarts both
+      impacts.set(key(point), point);
       const la = a.body.length, lb = b.body.length;
-      if (la <= lb) dead.add(a);
-      if (lb <= la) dead.add(b);
+      if (la <= lb) defeat(a);
+      if (lb <= la) defeat(b);
     };
     for (const s of movers) {
       const c = next.get(s), k = key(c);
@@ -131,10 +141,22 @@ class Game {
       if (owner === s) {                   // own body: only the tail cell is free, and only if we are not growing
         const tail = s.body[s.body.length - 1];
         if (!(s.pending === 0 && same(tail, c))) dead.add(s);
-      } else if (owner) clash(s, owner);   // ran into another snake
-      for (const o of heads.get(k)) if (o !== s) clash(s, o); // head-on
+      } else if (owner) {
+        const head = s.body[0];
+        if (same(c, owner.body[0]) && same(next.get(owner), head)) {
+          clash(s, owner, { x: (c.x + head.x) / 2, y: (c.y + head.y) / 2 });
+        } else {
+          impacts.set(k, c);
+          defeat(owner);                   // a side hit kills the snake being hit
+        }
+      }
+      for (const o of heads.get(k)) if (o !== s) clash(s, o, c); // heads entering the same cell
     }
 
+    this.collisionEffects = {
+      impacts: [...impacts.values()],
+      defeated: [...defeated].map(({ body, color, dir }) => ({ body: body.slice(), color, dir })),
+    };
     for (const s of movers) {
       if (dead.has(s)) continue;
       const c = next.get(s), h = s.body[0];

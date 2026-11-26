@@ -2,6 +2,7 @@
 
 Every snake is a **real pod**. The web page is served by the **arena pod**, which also referees the game
 and creates/deletes the snake pods through the Kubernetes API.
+The browser shows each snake as a color-coded column of tanks on a 25 × 15 board, with one tank per occupied square.
 
 ```
  browser ──SSE/HTTP──►  arena pod  ──(Kubernetes API: create/delete pods)──►  snake pod ×N
@@ -44,7 +45,7 @@ middleware in front.
 | `SNAKE_COUNT` | 8 | snake pods created on Start (1–20) |
 | `MAX_FOOD` | 6 | food items on the board (1–50) |
 | `MAX_DEATHS` | 5 | a snake pod exits with an error after this many deaths (1–20) |
-| `TICK_MS` | 140 | ms per game tick (50–2000) |
+| `TICK_MS` | 240 | ms per game tick (50–2000) |
 | `START_TIMEOUT_SECONDS` | 30 | after Start, play begins when all pods are ready, or after this long with the ones that are |
 
 ## How it works
@@ -53,11 +54,15 @@ middleware in front.
   `app.kubernetes.io/name=snake`, owned by the arena pod). They run the same image with `node snake.js`.
   Pods appear on the board once they have joined; until then the sidebar shows their real status
   (`ContainerCreating`, `ErrImagePull`, …).
-* **Every tick** the arena publishes the world; each snake pod long-polls it, runs the bot
-  (BFS to food, flood-fill safety, hunting smaller snakes, same logic as the original) and posts its move.
+* **Every tick** the arena publishes the world. Each snake pod long-polls it, uses BFS to find food
+  and side hits, checks its space with flood-fill, and posts its move.
   The arena resolves all moves simultaneously. A pod that answers too late just keeps going straight.
-* **Deaths**: hitting a wall/itself/a longer snake restarts the snake at length 1 (in-game). After
-  `MAX_DEATHS` the pod **exits with code 1** → real `Error` status in `kubectl get pods`.
+* **Collisions** count from the positions at the start of the tick. A snake that hits another
+  snake from the side wins at any length. When two heads enter the same cell or swap cells,
+  the longer snake wins. If both are the same length, both die. Collisions between columns show
+  a comic burst at the impact, and each defeated formation blinks at its previous position.
+* **Deaths**: a snake that hits a wall, hits itself, or loses a collision restarts at length 1.
+  After `MAX_DEATHS` the pod **exits with code 1** → real `Error` status in `kubectl get pods`.
 * **`kubectl delete pod <snake>`** removes that snake from the board (shown as `Evicted`/`Terminating`).
   It is not replaced until you Restart.
 * **Cleanup**: snake pods are owned by the arena pod, so deleting/redeploying the arena garbage-collects

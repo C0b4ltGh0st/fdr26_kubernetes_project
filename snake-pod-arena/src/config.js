@@ -18,7 +18,7 @@ module.exports = Object.freeze({
   SNAKE_COUNT: int('SNAKE_COUNT', 8, 1, 20),
   MAX_FOOD: int('MAX_FOOD', 6, 1, 50),
   MAX_DEATHS: int('MAX_DEATHS', 5, 1, 20),
-  TICK_MS: int('TICK_MS', 140, 50, 2000),
+  TICK_MS: int('TICK_MS', 240, 50, 2000),
   START_TIMEOUT_SECONDS: int('START_TIMEOUT_SECONDS', 30, 1, 600),
   PORT: int('PORT', 8080, 1, 65535),
   // Where snake pods reach the arena (the Service name inside the namespace).

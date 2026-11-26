@@ -1,8 +1,7 @@
 'use strict';
 // The bot brain that runs inside every snake pod.
-// Same strategy as the original browser version: BFS to food, flood-fill
-// space check (no self-trapping), tail-aware timing, avoids heads of longer
-// snakes, avoids contested food, and hunts slightly smaller snakes.
+// Uses BFS to find food and side hits, checks space with flood-fill, and
+// looks for head-on intercepts against slightly smaller snakes.
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const key = (p) => `${p.x},${p.y}`;
@@ -31,15 +30,18 @@ function chooseMove(world, name) {
 
   const info = world.foods.map((f) => ({ i: idx(f), val: f.val, contested: rivals.some((o) => dist(o.body[0], f) < dist(h, f)) }));
 
-  // Hunting: a slightly smaller, still valuable snake in sight is prey (its body kills it when we hit it)
   const preyCells = new Map(), targets = [];
   for (const o of rivals) {
     const ol = o.body.length;
-    if (ol >= 3 && ol < len && len - ol <= Math.max(3, len * 0.4) && dist(h, o.body[0]) <= 14) {
-      for (const p of o.body) preyCells.set(idx(p), ol);
-      const oh = o.body[0], nx = { x: oh.x + o.dir.x, y: oh.y + o.dir.y }; // predicted next head cell (intercept)
-      if (inside(nx) && freeAt[idx(nx)] === 0) targets.push({ i: idx(nx), w: ol });
-    }
+    const oh = o.body[0];
+    if (ol < 3 || dist(h, oh) > 14) continue;
+
+    for (const p of o.body.slice(1)) preyCells.set(idx(p), ol);
+    if (ol >= len || len - ol > Math.max(3, len * 0.4)) continue;
+
+    preyCells.set(idx(oh), ol); // we can also win if a shorter rival swaps heads with us
+    const nx = { x: oh.x + o.dir.x, y: oh.y + o.dir.y };
+    if (inside(nx) && freeAt[idx(nx)] === 0) targets.push({ i: idx(nx), w: ol });
   }
 
   let best = null, bestScore = -Infinity;

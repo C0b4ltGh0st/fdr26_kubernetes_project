@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Snake Pod Arena</title>
+<title>Tank Column Arena</title>
 <style>
   :root {
     --bg:#101820; --fg:#eef4f7; --muted:#b7c6ce; --panel:#15242c; --line:#52636d; --btn:#1d7a68; --btn2:#40515d; --danger:#b4443c; --chip:#1b2f39;
@@ -52,8 +52,8 @@
 </head>
 <body>
 <main>
-  <h1>🐍 Snake Pod Arena</h1>
-  <p>Every snake is a real Kubernetes pod hunting soldiers (+1) and tanks (+3). This page is served by the arena pod, which referees the game.</p>
+  <h1>Tank Column Arena</h1>
+  <p>Columns grow by collecting soldiers (+1) and reserve tanks (+3). Each column runs in its own pod.</p>
 
   <div class="bar">
     <div class="controls">
@@ -64,8 +64,8 @@
     </div>
     <div class="cfg" title="Defined in the .env file of the project. Edit it and redeploy to change it.">
       <span>From <code>.env</code>:</span>
-      <span class="chip">Snakes <b id="cfgSnakes">–</b></span>
-      <span class="chip">Max food <b id="cfgFood">–</b></span>
+      <span class="chip">Columns <b id="cfgSnakes">–</b></span>
+      <span class="chip">Max pickups <b id="cfgFood">–</b></span>
       <span class="chip">Crash after <b id="cfgDeaths">–</b> deaths</span>
       <span class="chip">Tick <b id="cfgTick">–</b> ms</span>
     </div>
@@ -74,31 +74,45 @@
 
   <div class="stats" aria-live="polite">
     <span id="alive">Alive: 0</span>
-    <span id="food">Eaten: 0</span>
+    <span id="food">Pickups: 0</span>
     <span id="longest">Longest: 0</span>
     <span id="deaths">Deaths: 0</span>
   </div>
   <div class="layout">
-    <canvas id="arena" width="960" height="648" aria-label="Snake game arena"></canvas>
-    <aside><h2>Pods (sorted by items eaten)</h2><div id="pods"></div></aside>
+    <canvas id="arena" width="1000" height="600" aria-label="Top-down tank column arena"></canvas>
+    <aside><h2>Columns (sorted by pickups)</h2><div id="pods"></div></aside>
   </div>
-  <p class="hint">A snake that hits itself or a wall restarts at length 1. If a snake runs into another, the shorter one restarts; ties restart both. A pod that dies too often exits with an error and stays in <code>Error</code> until you restart the game.</p>
+  <p class="hint">Side hits go to the attacker. In a head-on clash, the longer column wins and ties reset both. A column that hits itself or a wall also resets to one tank. Pods that reach the death limit stay in <code>Error</code> until the game restarts.</p>
 </main>
 
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const canvas = $("arena"), ctx = canvas.getContext("2d");
-  const C = 24, W = canvas.width, H = canvas.height;
+  const C = 40, initialWidth = canvas.width, initialHeight = canvas.height;
+  const spriteScale = C / 24;
+  const BURST_MS = 460, BLINK_MS = 260, EFFECT_MS = 3 * BLINK_MS;
+  const burstRadii = [1, .57, 1.06, .62, .95, .56, 1.1, .61, .92, .54, 1.04, .58, .96, .63, 1.08, .56, .9, .6, 1.08, .58];
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 
   let state = null, connected = false, pending = false, actionError = "";
+  let effects = [], framePending = false;
 
   // ---- live connection to the arena pod ----
   const es = new EventSource("/api/events");
   es.onopen = () => { connected = true; render(); };
-  es.onmessage = (e) => { connected = true; state = JSON.parse(e.data); render(); };
-  es.onerror = () => { connected = false; render(); };
+  es.onmessage = (e) => {
+    const next = JSON.parse(e.data);
+    if (next.phase !== "running" || next.tick < state?.tick) effects = [];
+    if (next.phase === "running" && next.tick !== state?.tick && next.collisionEffects?.impacts.length) {
+      effects.push({ ...next.collisionEffects, startedAt: performance.now() });
+    }
+    connected = true;
+    state = next;
+    render();
+  };
+  es.onerror = () => { connected = false; effects = []; render(); };
 
   async function act(action) {
     pending = true; actionError = ""; render();
@@ -116,6 +130,7 @@
   function drawSoldier(f) {
     const x = f.x*C + C/2, y = f.y*C + C/2;
     ctx.save(); ctx.translate(x,y);
+    ctx.scale(spriteScale, spriteScale);
     ctx.strokeStyle = "#3b2f22"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
     ctx.beginPath(); ctx.moveTo(3,-2); ctx.lineTo(10,-9); ctx.stroke();      // rifle
     ctx.fillStyle = "#5a7a3a"; ctx.fillRect(-5,-3,10,11);                    // body
@@ -125,67 +140,139 @@
     ctx.fillRect(-5.5,-7.5,11,1.6);
     ctx.restore();
   }
-  function drawTank(f) {
-    const x = f.x*C + C/2, y = f.y*C + C/2;
-    ctx.save(); ctx.translate(x,y);
-    ctx.fillStyle = "#2c2f26"; ctx.fillRect(-11,2,22,7);                     // tracks
-    ctx.fillStyle = "#555c47"; for (let i=-8;i<=8;i+=5.5) { ctx.beginPath(); ctx.arc(i,5.5,2,0,7); ctx.fill(); }
-    ctx.fillStyle = "#6b7a4f"; ctx.fillRect(-10,-3,20,6);                    // hull
-    ctx.fillStyle = "#5a6842"; ctx.fillRect(-5,-8,10,6);                     // turret
-    ctx.fillStyle = "#3d4530"; ctx.fillRect(4,-6.5,10,2.4);                  // barrel
+  // Tank silhouette faces up before it is rotated into the direction of travel.
+  function drawTank(color, leader) {
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#0e171a";
+    ctx.lineWidth = 1.15;
+    for (const x of [-8.8, 4.1]) {
+      ctx.fillStyle = "#53696b";
+      ctx.beginPath(); ctx.roundRect(x, -5.4, 4.7, 15.8, 1.1); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#253739";
+      for (let y = -3.6; y < 10; y += 3.1) ctx.fillRect(x + 0.5, y, 3.7, 1.15);
+    }
+
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.roundRect(-5.2, -5.8, 10.4, 15.6, 1.1); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-3.8, -4.8); ctx.lineTo(3.8, -4.8); ctx.lineTo(6.2, 0.3);
+    ctx.lineTo(3.8, 6.7); ctx.lineTo(-3.8, 6.7); ctx.lineTo(-6.2, 0.3); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = leader ? "rgba(255,255,255,.34)" : "rgba(255,255,255,.13)";
+    ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = "#203638";
+    ctx.beginPath(); ctx.roundRect(-2.9, 1, 2.1, 3.1, 0.7); ctx.roundRect(0.8, 1, 2.1, 3.1, 0.7); ctx.fill();
+    ctx.fillRect(-3.5, 8, 7, 0.8);
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.roundRect(-1.25, -10.2, 2.5, 10.1, 0.8); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(-2.1, -10.9, 4.2, 2.5, 0.55); ctx.fill(); ctx.stroke();
+  }
+
+  function drawReserveTank(f) {
+    ctx.save();
+    ctx.translate(f.x * C + C / 2, f.y * C + C / 2);
+    ctx.scale(spriteScale, spriteScale);
+    ctx.fillStyle = "#433925";
+    ctx.strokeStyle = "#e9c174";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, -10.5); ctx.lineTo(10.5, 0); ctx.lineTo(0, 10.5);
+    ctx.lineTo(-10.5, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.scale(0.65, 0.65);
+    drawTank("#c3a36a", false);
     ctx.restore();
   }
-  function drawSnake(s, frame) {
-    const n = s.body.length, pts = s.body.map(p => ({x:p.x*C+C/2, y:p.y*C+C/2}));
-    const w = i => C*(0.28 + 0.52*(1 - i/Math.max(n,6)));
-    ctx.lineCap = "round"; ctx.lineJoin = "round";
-    for (const pass of [0,1,2]) {
-      for (let i=n-1;i>=1;i--) {
-        ctx.beginPath(); ctx.moveTo(pts[i].x,pts[i].y); ctx.lineTo(pts[i-1].x,pts[i-1].y);
-        if (pass===0) { ctx.strokeStyle="rgba(0,0,0,.55)"; ctx.lineWidth = w(i)+3; }
-        else if (pass===1) { ctx.strokeStyle = s.color; ctx.lineWidth = w(i); }
-        else { ctx.strokeStyle = "rgba(255,255,255,.28)"; ctx.lineWidth = w(i)*0.35; }
-        ctx.stroke();
-      }
-    }
-    for (let i=1;i<n;i++) {                                  // scale pattern
-      ctx.fillStyle = i%2 ? "rgba(0,0,0,.28)" : "rgba(0,0,0,.14)";
-      ctx.beginPath(); ctx.arc(pts[i].x,pts[i].y,w(i)*0.28,0,7); ctx.fill();
-    }
-    const h = pts[0], d = s.dir, ang = Math.atan2(d.y,d.x);
-    if (frame % 6 < 3) {                                     // forked tongue
-      ctx.strokeStyle = "#e0314b"; ctx.lineWidth = 1.5;
-      const tx = h.x + d.x*C*0.95, ty = h.y + d.y*C*0.95;
-      ctx.beginPath(); ctx.moveTo(h.x+d.x*C*0.4,h.y+d.y*C*0.4); ctx.lineTo(tx,ty);
-      ctx.lineTo(tx+d.x*4-d.y*3, ty+d.y*4+d.x*3); ctx.moveTo(tx,ty); ctx.lineTo(tx+d.x*4+d.y*3, ty+d.y*4-d.x*3); ctx.stroke();
-    }
-    ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.beginPath(); ctx.ellipse(h.x,h.y,C*0.56,C*0.46,ang,0,7); ctx.fill();
-    ctx.fillStyle = s.color; ctx.beginPath(); ctx.ellipse(h.x,h.y,C*0.52,C*0.42,ang,0,7); ctx.fill();
-    for (const sg of [-1,1]) {                               // eyes
-      const ex = h.x + d.x*C*0.18 - d.y*sg*C*0.22, ey = h.y + d.y*C*0.18 + d.x*sg*C*0.22;
-      ctx.fillStyle = "#fffbe0"; ctx.beginPath(); ctx.arc(ex,ey,3.2,0,7); ctx.fill();
-      ctx.fillStyle = "#111"; ctx.beginPath(); ctx.ellipse(ex+d.x*.8,ey+d.y*.8,1,2.4,ang+Math.PI/2,0,7); ctx.fill();
-    }
+
+  function drawColumn(s) {
+    s.body.forEach((tank, index) => {
+      const ahead = s.body[index - 1];
+      const dir = ahead ? { x: ahead.x - tank.x, y: ahead.y - tank.y } : s.dir;
+      ctx.save();
+      ctx.translate(tank.x * C + C / 2, tank.y * C + C / 2);
+      ctx.rotate(Math.atan2(dir.y, dir.x) + Math.PI / 2);
+      ctx.scale(spriteScale, spriteScale);
+      drawTank(s.color, index === 0);
+      ctx.restore();
+    });
   }
-  function overlay(title, sub) {
+
+  function drawDefeated(columns, age) {
+    const fade = reducedMotion.matches;
+    if (!fade && age % BLINK_MS >= BLINK_MS / 2) return;
+    ctx.save();
+    ctx.globalAlpha = fade ? 0.78 * (1 - age / EFFECT_MS) : 0.78;
+    for (const column of columns) drawColumn(column);
+    ctx.restore();
+  }
+
+  function burstPath(radius) {
+    ctx.beginPath();
+    ctx.moveTo(radius * burstRadii[0], 0);
+    for (let i = 1; i < burstRadii.length; i++) {
+      const angle = i * 2 * Math.PI / burstRadii.length;
+      const length = radius * burstRadii[i];
+      ctx.lineTo(Math.cos(angle) * length, Math.sin(angle) * length * 0.77);
+    }
+    ctx.closePath();
+  }
+
+  function drawImpact(point, age) {
+    if (age >= BURST_MS) return;
+    const progress = age / BURST_MS;
+    const scale = reducedMotion.matches ? 1 : 0.72 + Math.min(age / 100, 1) * 0.28 + progress * 0.13;
+    ctx.save();
+    ctx.translate((point.x + 0.5) * C, (point.y + 0.5) * C);
+    ctx.rotate(-0.13);
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = Math.min(1, (1 - progress) * 2.7);
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 2.7;
+    ctx.strokeStyle = "#21151e";
+    ctx.fillStyle = "#ff7944";
+    burstPath(44); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#ffd455";
+    burstPath(32); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#fff1ac";
+    burstPath(24); ctx.fill();
+    ctx.restore();
+  }
+
+  function overlay(title, sub, W, H) {
     ctx.fillStyle = "rgba(8,14,18,.66)"; ctx.fillRect(0,0,W,H);
     ctx.textAlign = "center";
     ctx.fillStyle = "#eef4f7"; ctx.font = "600 30px system-ui, sans-serif"; ctx.fillText(title, W/2, H/2 - 8);
     ctx.fillStyle = "#b7c6ce"; ctx.font = "17px system-ui, sans-serif"; ctx.fillText(sub, W/2, H/2 + 26);
   }
   function draw() {
+    const W = state ? state.cols * C : initialWidth, H = state ? state.rows * C : initialHeight;
+    const scale = window.devicePixelRatio || 1;
+    const width = Math.round(W * scale), height = Math.round(H * scale);
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      ctx.setTransform(width / W, 0, 0, height / H, 0, 0);
+    }
     ctx.clearRect(0,0,W,H);
     ctx.fillStyle = "#17281f"; ctx.fillRect(0,0,W,H);
-    ctx.strokeStyle = "rgba(255,255,255,.04)"; ctx.lineWidth = 1;
-    const cols = state?.cols || 40, rows = state?.rows || 27;
-    for (let x=0;x<=cols;x++) { ctx.beginPath(); ctx.moveTo(x*C,0); ctx.lineTo(x*C,rows*C); ctx.stroke(); }
-    for (let y=0;y<=rows;y++) { ctx.beginPath(); ctx.moveTo(0,y*C); ctx.lineTo(cols*C,y*C); ctx.stroke(); }
-    if (!state || !connected) return overlay("Arena unreachable", "Waiting for the arena pod…");
-    for (const f of state.foods) f.type === "tank" ? drawTank(f) : drawSoldier(f);
-    for (const s of state.snakes) if (s.alive && s.body.length) drawSnake(s, state.tick);
-    if (state.phase === "stopped") overlay("Game stopped", `Press Start to launch ${state.config.snakeCount} snake pods`);
-    else if (state.phase === "starting" && !state.stats.alive) overlay("Starting…", `${state.ready}/${state.total} pods ready`);
-    else if (state.phase === "stopping") overlay("Stopping…", "Deleting snake pods");
+    ctx.strokeStyle = "rgba(255,255,255,.07)"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = C; x < W; x += C) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    for (let y = C; y < H; y += C) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+    if (!state || !connected) return overlay("Arena unreachable", "Waiting for the arena pod…", W, H);
+
+    const now = performance.now();
+    effects = effects.filter(({ startedAt }) => now - startedAt < EFFECT_MS);
+    for (const f of state.foods) f.type === "tank" ? drawReserveTank(f) : drawSoldier(f);
+    for (const { defeated, startedAt } of effects) drawDefeated(defeated, now - startedAt);
+    for (const s of state.snakes) if (s.alive) drawColumn(s);
+    for (const { impacts, startedAt } of effects) for (const point of impacts) drawImpact(point, now - startedAt);
+    if (effects.length && !framePending) {
+      framePending = true;
+      requestAnimationFrame(() => { framePending = false; draw(); });
+    }
+    if (state.phase === "stopped") overlay("Game stopped", `Press Start to launch ${state.config.snakeCount} columns`, W, H);
+    else if (state.phase === "starting" && !state.stats.alive) overlay("Starting…", `${state.ready}/${state.total} pods ready`, W, H);
+    else if (state.phase === "stopping") overlay("Stopping…", "Deleting column pods", W, H);
   }
 
   // ---- panels ----
@@ -220,18 +307,19 @@
       $("cfgSnakes").textContent = state.config.snakeCount; $("cfgFood").textContent = state.config.maxFood;
       $("cfgDeaths").textContent = state.config.maxDeaths;  $("cfgTick").textContent = state.config.tickMs;
       $("alive").textContent = `Alive: ${state.stats.alive}/${state.total}`;
-      $("food").textContent = `Eaten: ${state.stats.eaten}`;
+      $("food").textContent = `Pickups: ${state.stats.eaten}`;
       $("longest").textContent = `Longest: ${state.stats.longest}`;
       $("deaths").textContent = `Deaths: ${state.stats.deaths}`;
       const sorted = [...state.snakes].sort((a,b) => b.eaten - a.eaten || b.length - a.length);
       $("pods").innerHTML = sorted.length ? sorted.map(s => `
         <div class="pod"><span class="sw" style="background:${esc(s.color)}"></span>
-          <span class="nm">${esc(s.name)}</span><span class="len" title="Items eaten">${s.eaten}</span>
-          <span class="meta"><span>Length: ${s.length}</span><span>Deaths: ${s.deaths}/${state.config.maxDeaths}</span>${podState(s)}</span>
-        </div>`).join("") : '<p class="empty">No snake pods. Press Start to create them.</p>';
+          <span class="nm">${esc(s.name)}</span><span class="len" title="Pickups">${s.eaten}</span>
+          <span class="meta"><span>Tanks: ${s.length}</span><span>Deaths: ${s.deaths}/${state.config.maxDeaths}</span>${podState(s)}</span>
+        </div>`).join("") : '<p class="empty">Press Start to launch the columns.</p>';
     }
     draw();
   }
+  window.addEventListener("resize", draw);
   render();
 })();
 </script>

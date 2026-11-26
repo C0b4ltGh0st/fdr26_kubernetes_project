@@ -202,6 +202,7 @@ function buildState() {
     phase, error,
     config: { snakeCount: cfg.SNAKE_COUNT, maxFood: cfg.MAX_FOOD, maxDeaths: cfg.MAX_DEATHS, tickMs: cfg.TICK_MS },
     cols: COLS, rows: ROWS, tick: game.tick,
+    collisionEffects: game.collisionEffects,
     ready: list.filter((s) => s.joined && !s.gone).length, total: list.length,
     stats: { alive: onBoard.length, eaten: game.eaten, deaths: game.deaths, longest: Math.max(0, ...onBoard.map((s) => s.body.length)) },
     foods: game.foods.map((f) => ({ x: f.x, y: f.y, type: f.type })),
