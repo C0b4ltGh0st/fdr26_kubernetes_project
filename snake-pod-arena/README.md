@@ -61,7 +61,7 @@ middleware in front.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SNAKE_COUNT` | 8 | snake pods created on Start (1–20) |
+| `SNAKE_COUNT` | 8 | snake pods created on Start (1–30) |
 | `MAX_FOOD` | 6 | food items on the board (1–50) |
 | `MAX_DEATHS` | 5 | a snake pod exits with an error after this many deaths (1–20) |
 | `TICK_MS` | 240 | ms per game tick (50–2000) |
