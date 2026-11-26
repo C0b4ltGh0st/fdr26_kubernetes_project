@@ -24,7 +24,7 @@ cd snake-pod-arena
 export KUBECONFIG="<path to file course-45.config>"
 
 chmod +x ./scripts/publish-image.sh
-./scripts/publish-image.sh
+sudo ./scripts/publish-image.sh
 
 kubectl apply -k .
 ```
