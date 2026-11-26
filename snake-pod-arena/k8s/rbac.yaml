@@ -1,0 +1,27 @@
+# The arena pod creates and deletes the snake pods, so it needs pod permissions
+# in its own namespace (and nothing else).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snake-arena
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: snake-arena
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: snake-arena
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: snake-arena
+subjects:
+  - kind: ServiceAccount
+    name: snake-arena

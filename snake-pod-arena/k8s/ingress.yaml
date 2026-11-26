@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: snake-arena
+  labels:
+    app.kubernetes.io/name: snake-arena
+    app.kubernetes.io/part-of: snake-pod-arena
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: course-45.network.garden      # change to your host
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: snake-arena
+                port:
+                  number: 80
